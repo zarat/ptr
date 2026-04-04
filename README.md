@@ -1,5 +1,7 @@
 # ptr
 
+For the map, put your pmtiles in /assets/pmtiles.
+
 # Extract OSM data
 <pre>
 osmium tags-filter wien.osm.pbf r/route=bus -o bus-routes-only.osm.pbf -O
