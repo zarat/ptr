@@ -1,0 +1,1194 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Wien Öffis</title>
+
+  <link rel="stylesheet" href="assets/css/maplibre-gl.css" />
+  <script src="assets/js/maplibre-gl.js"></script>
+  <script src="assets/js/pmtiles.js"></script>
+
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      font-family: sans-serif;
+    }
+
+    #map {
+      width: 100%;
+      height: 100vh;
+    }
+
+    .maplibregl-popup-content {
+      min-width: 280px;
+      max-width: 420px;
+    }
+
+    .popup-stop-name {
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .popup-subtitle {
+      margin-bottom: 8px;
+    }
+
+    .route-list {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .route-list li {
+      margin-bottom: 6px;
+    }
+
+    .route-link {
+      display: inline;
+      border: 0;
+      background: none;
+      padding: 0;
+      margin: 0;
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+      color: #0a58ca;
+      text-decoration: underline;
+    }
+
+    .legend {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      z-index: 10;
+      background: rgba(255,255,255,0.95);
+      border-radius: 8px;
+      padding: 10px 12px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.12);
+      font-size: 14px;
+      line-height: 1.4;
+      max-width: 290px;
+    }
+
+    .legend-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 6px;
+    }
+
+    .legend-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    .dot-bus { background: #e30000; }
+    .dot-tram { background: #0066dd; }
+    .dot-subway { background: #009966; }
+    .dot-train { background: #7a3db8; }
+    .dot-walk { background: #555; }
+
+    .route-panel {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      z-index: 10;
+      width: 340px;
+      max-height: calc(100vh - 24px);
+      overflow: auto;
+      background: rgba(255,255,255,0.97);
+      border-radius: 8px;
+      padding: 12px 14px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.12);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .route-panel h3 {
+      margin: 0 0 8px 0;
+      font-size: 16px;
+    }
+
+    .route-panel-empty {
+      color: #555;
+    }
+
+    .route-summary {
+      margin-bottom: 10px;
+      font-size: 13px;
+      color: #444;
+    }
+
+    .route-steps {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .route-steps li {
+      margin-bottom: 10px;
+    }
+
+    .route-step-meta {
+      font-size: 12px;
+      color: #666;
+    }
+
+    .route-step-sub {
+      font-size: 12px;
+      color: #555;
+    }
+
+    .route-actions {
+      margin-top: 10px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .route-btn {
+      border: 1px solid #ccc;
+      background: #fff;
+      border-radius: 6px;
+      padding: 6px 10px;
+      cursor: pointer;
+      font: inherit;
+    }
+
+    .route-btn:hover {
+      background: #f4f4f4;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="map"></div>
+
+  <div class="legend">
+    <div><strong>Öffi-Stationen</strong></div>
+    <div class="legend-row"><span class="legend-dot dot-bus"></span> Bus</div>
+    <div class="legend-row"><span class="legend-dot dot-tram"></span> Tram</div>
+    <div class="legend-row"><span class="legend-dot dot-subway"></span> U-Bahn</div>
+    <div class="legend-row"><span class="legend-dot dot-train"></span> Zug</div>
+    <div class="legend-row"><span class="legend-dot dot-walk"></span> Gehweg / Umstieg</div>
+    <div style="margin-top:10px; font-size:13px; color:#444;">
+      Klick auf freie Karte: 1. Start, 2. Ziel, 3. neu beginnen
+    </div>
+  </div>
+
+  <div class="route-panel" id="route-panel">
+    <h3>Öffi-Route</h3>
+    <div id="route-panel-content" class="route-panel-empty">
+      Noch keine Route gewählt.
+    </div>
+    <div class="route-actions">
+      <button class="route-btn" id="clear-route-btn" type="button">Route löschen</button>
+    </div>
+  </div>
+
+<script>
+const protocol = new pmtiles.Protocol();
+maplibregl.addProtocol("pmtiles", protocol.tile);
+
+const PT_ROUTER_URL = "http://localhost:8010/pt-route";
+
+const MODES = {
+  bus: {
+    label: "Bus",
+    color: "#e30000",
+    stopsUrl: "bus-stops.geojson",
+    routesUrl: "bus-routes.geojson",
+    stopSourceId: "bus-stops-source",
+    stopLayerId: "bus-stops-layer",
+    routeHighlightSourceId: "bus-route-highlight-source",
+    routeHighlightLayerId: "bus-route-highlight-layer"
+  },
+  tram: {
+    label: "Tram",
+    color: "#0066dd",
+    stopsUrl: "tram-stops.geojson",
+    routesUrl: "tram-routes.geojson",
+    stopSourceId: "tram-stops-source",
+    stopLayerId: "tram-stops-layer",
+    routeHighlightSourceId: "tram-route-highlight-source",
+    routeHighlightLayerId: "tram-route-highlight-layer"
+  },
+  subway: {
+    label: "U-Bahn",
+    color: "#009966",
+    stopsUrl: "subway-stops.geojson",
+    routesUrl: "subway-routes.geojson",
+    stopSourceId: "subway-stops-source",
+    stopLayerId: "subway-stops-layer",
+    routeHighlightSourceId: "subway-route-highlight-source",
+    routeHighlightLayerId: "subway-route-highlight-layer"
+  },
+  train: {
+    label: "Zug",
+    color: "#7a3db8",
+    stopsUrl: "train-stops.geojson",
+    routesUrl: "train-routes.geojson",
+    stopSourceId: "train-stops-source",
+    stopLayerId: "train-stops-layer",
+    routeHighlightSourceId: "train-route-highlight-source",
+    routeHighlightLayerId: "train-route-highlight-layer"
+  }
+};
+
+let activePopup = null;
+const routeDataByMode = {};
+
+let startPoint = null;
+let endPoint = null;
+let startMarker = null;
+let endMarker = null;
+let currentPtRouteResponse = null;
+
+const map = new maplibregl.Map({
+  container: "map",
+  center: [16.3064168, 48.2419565],
+  zoom: 12,
+  style: {
+    version: 8,
+    sources: {
+      omt: {
+        type: "vector",
+        url: "pmtiles://http://localhost/assets/pmtiles/wien-edited.pmtiles",
+        attribution: "© OpenStreetMap and contributors"
+      },
+      meingeojson: {
+        type: "geojson",
+        data: "http://localhost/trees.geojson"
+      }
+    },
+    layers: [
+      {
+        id: "background",
+        type: "background",
+        paint: { "background-color": "#f2efe9" }
+      },
+      {
+        id: "landcover",
+        type: "fill",
+        source: "omt",
+        "source-layer": "landcover",
+        paint: {
+          "fill-color": [
+            "match",
+            ["get", "class"],
+            "forest", "#cfe6c9",
+            "wood", "#cfe6c9",
+            "grass", "#e6efd8",
+            "#e9efe3"
+          ]
+        }
+      },
+      {
+        id: "landuse",
+        type: "fill",
+        source: "omt",
+        "source-layer": "landuse",
+        paint: {
+          "fill-color": [
+            "match",
+            ["get", "class"],
+            "residential", "#ece7e1",
+            "industrial", "#e3ddd5",
+            "commercial", "#e9e1d6",
+            "farmland", "#eef3d6",
+            "#ebe7df"
+          ],
+          "fill-opacity": 0.7
+        }
+      },
+      {
+        id: "buildings",
+        type: "fill",
+        source: "omt",
+        "source-layer": "building",
+        paint: {
+          "fill-color": "#d9d0c7",
+          "fill-opacity": 0.7
+        }
+      },
+      {
+        id: "buildings-3d",
+        type: "fill-extrusion",
+        source: "omt",
+        "source-layer": "building",
+        minzoom: 10,
+        maxzoom: 17,
+        paint: {
+          "fill-extrusion-color": "#d9d0c7",
+          "fill-extrusion-height": ["coalesce", ["to-number", ["get", "render_height"]], 0],
+          "fill-extrusion-base": ["coalesce", ["to-number", ["get", "render_min_height"]], 0],
+          "fill-extrusion-opacity": 0.9
+        }
+      },
+      {
+        id: "roads-motorway",
+        type: "line",
+        source: "omt",
+        "source-layer": "transportation",
+        filter: ["==", ["get", "class"], "motorway"],
+        layout: {
+          "line-cap": "round",
+          "line-join": "round"
+        },
+        paint: {
+          "line-color": "#e3c08d",
+          "line-width": [
+            "interpolate", ["linear"], ["zoom"],
+            5, 0.8,
+            8, 1.2,
+            10, 2.0,
+            12, 3.5,
+            14, 6.0,
+            16, 10.0,
+            18, 16.0
+          ]
+        }
+      },
+      {
+        id: "roads-primary",
+        type: "line",
+        source: "omt",
+        "source-layer": "transportation",
+        filter: ["==", ["get", "class"], "primary"],
+        layout: {
+          "line-cap": "round",
+          "line-join": "round"
+        },
+        paint: {
+          "line-color": "#f2f2f2",
+          "line-width": [
+            "interpolate", ["linear"], ["zoom"],
+            5, 0.5,
+            8, 0.9,
+            10, 1.5,
+            12, 2.6,
+            14, 4.2,
+            16, 7.0,
+            18, 11.0
+          ]
+        }
+      },
+      {
+        id: "roads-secondary",
+        type: "line",
+        source: "omt",
+        "source-layer": "transportation",
+        filter: ["==", ["get", "class"], "secondary"],
+        layout: {
+          "line-cap": "round",
+          "line-join": "round"
+        },
+        paint: {
+          "line-color": "#e8e8e8",
+          "line-width": [
+            "interpolate", ["linear"], ["zoom"],
+            5, 0.4,
+            8, 0.7,
+            10, 1.2,
+            12, 2.0,
+            14, 3.2,
+            16, 5.5,
+            18, 8.5
+          ]
+        }
+      },
+      {
+        id: "roads-other",
+        type: "line",
+        source: "omt",
+        "source-layer": "transportation",
+        filter: [
+          "all",
+          ["!=", ["get", "class"], "motorway"],
+          ["!=", ["get", "class"], "primary"],
+          ["!=", ["get", "class"], "secondary"],
+          ["!=", ["get", "subclass"], "platform"],
+          ["!=", ["get", "class"], "bridge"],
+          ["!=", ["get", "brunnel"], "tunnel"]
+        ],
+        layout: {
+          "line-cap": "round",
+          "line-join": "round"
+        },
+        paint: {
+          "line-color": "#dcdcdc",
+          "line-width": [
+            "interpolate", ["linear"], ["zoom"],
+            5, 0.2,
+            8, 0.4,
+            10, 0.8,
+            12, 1.3,
+            14, 2.0,
+            16, 3.2,
+            18, 5.0
+          ]
+        }
+      },
+      {
+        id: "trees",
+        type: "circle",
+        source: "meingeojson",
+        minzoom: 17,
+        paint: {
+          "circle-radius": [
+            "interpolate", ["linear"], ["to-number", ["get", "diameter_crown"]],
+            0, 4,
+            5, 6,
+            10, 8,
+            20, 16
+          ],
+          "circle-color": "#2e7d32",
+          "circle-stroke-color": "#1b5e20",
+          "circle-stroke-width": 1
+        }
+      }
+    ]
+  }
+});
+
+map.addControl(new maplibregl.NavigationControl(), "top-right");
+
+function closeActivePopup() {
+  if (activePopup) {
+    activePopup.remove();
+    activePopup = null;
+  }
+}
+
+function safeJsonParse(value, fallback = null) {
+  if (value == null) return fallback;
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeRoutesFromStopProperties(properties) {
+  const rawRoutes = safeJsonParse(properties.routes, properties.routes);
+  if (!Array.isArray(rawRoutes)) return [];
+
+  const routes = rawRoutes.map(route => ({
+    ref: String(route?.ref ?? "").trim(),
+    name: String(route?.name ?? "").trim(),
+    variants: Array.isArray(route?.variants)
+      ? route.variants.map(v => ({
+          relation_id: String(v?.relation_id ?? "").trim(),
+          from: String(v?.from ?? "").trim(),
+          to: String(v?.to ?? "").trim(),
+          name: String(v?.name ?? "").trim()
+        }))
+      : []
+  })).filter(route => route.ref || route.variants.length);
+
+  routes.sort((a, b) => {
+    const ra = a.ref || "";
+    const rb = b.ref || "";
+    return ra.localeCompare(rb, "de", { numeric: true });
+  });
+
+  return routes;
+}
+
+function clearAllHighlights() {
+  for (const mode of Object.values(MODES)) {
+    const source = map.getSource(mode.routeHighlightSourceId);
+    if (!source) continue;
+
+    source.setData({
+      type: "FeatureCollection",
+      features: []
+    });
+  }
+}
+
+function fitToFeatures1(features) {
+  if (!features.length) return;
+
+  const bounds = new maplibregl.LngLatBounds();
+  let hasCoords = false;
+
+  function extendCoords(coords) {
+    for (const c of coords) {
+      if (Array.isArray(c[0])) {
+        extendCoords(c);
+      } else {
+        bounds.extend(c);
+        hasCoords = true;
+      }
+    }
+  }
+
+  for (const feature of features) {
+    if (feature.geometry?.coordinates) {
+      extendCoords(feature.geometry.coordinates);
+    }
+  }
+
+  if (hasCoords) {
+    map.fitBounds(bounds, {
+      padding: 60,
+      maxZoom: 15,
+      duration: 500
+    });
+  }
+}
+
+function fitToFeatures(features) {
+  if (!features.length) return;
+
+  const bounds = new maplibregl.LngLatBounds();
+  let hasCoords = false;
+
+  function extendGeometry(geometry) {
+    if (!geometry || !geometry.coordinates) return;
+
+    const { type, coordinates } = geometry;
+
+    if (type === "Point") {
+      bounds.extend(coordinates);
+      hasCoords = true;
+      return;
+    }
+
+    if (type === "MultiPoint" || type === "LineString") {
+      for (const coord of coordinates) {
+        bounds.extend(coord);
+        hasCoords = true;
+      }
+      return;
+    }
+
+    if (type === "MultiLineString" || type === "Polygon") {
+      for (const part of coordinates) {
+        for (const coord of part) {
+          bounds.extend(coord);
+          hasCoords = true;
+        }
+      }
+      return;
+    }
+
+    if (type === "MultiPolygon") {
+      for (const polygon of coordinates) {
+        for (const ring of polygon) {
+          for (const coord of ring) {
+            bounds.extend(coord);
+            hasCoords = true;
+          }
+        }
+      }
+    }
+  }
+
+  for (const feature of features) {
+    extendGeometry(feature.geometry);
+  }
+
+  if (hasCoords) {
+    map.fitBounds(bounds, {
+      padding: 60,
+      maxZoom: 15,
+      duration: 500
+    });
+  }
+}
+
+function showRouteHighlightByRelation(routeType, relationId) {
+  const mode = MODES[routeType];
+  if (!mode) {
+    console.warn("Unbekannter routeType:", routeType);
+    return;
+  }
+
+  const allRoutes = routeDataByMode[routeType];
+  if (!allRoutes || !Array.isArray(allRoutes.features)) {
+    console.warn("Keine Routendaten geladen für:", routeType);
+    return;
+  }
+
+  const normalizedRelationId = String(relationId ?? "").trim();
+
+  const matches = allRoutes.features.filter(feature => {
+    const osmId = String(feature?.properties?.osm_id ?? "").trim();
+    return osmId === normalizedRelationId;
+  });
+
+  const source = map.getSource(mode.routeHighlightSourceId);
+  if (!source) {
+    console.warn("Highlight-Source fehlt:", mode.routeHighlightSourceId);
+    return;
+  }
+
+  clearAllHighlights();
+
+  source.setData({
+    type: "FeatureCollection",
+    features: matches
+  });
+
+  fitToFeatures(matches);
+}
+
+function showRouteHighlightByRef(routeType, routeRef) {
+  const mode = MODES[routeType];
+  if (!mode) {
+    console.warn("Unbekannter routeType:", routeType);
+    return;
+  }
+
+  const allRoutes = routeDataByMode[routeType];
+  if (!allRoutes || !Array.isArray(allRoutes.features)) {
+    console.warn("Keine Routendaten geladen für:", routeType);
+    return;
+  }
+
+  const normalizedRef = String(routeRef ?? "").trim().toLowerCase();
+
+  const matches = allRoutes.features.filter(feature => {
+    const ref = String(feature?.properties?.ref ?? "").trim().toLowerCase();
+    return ref === normalizedRef;
+  });
+
+  const source = map.getSource(mode.routeHighlightSourceId);
+  if (!source) {
+    console.warn("Highlight-Source fehlt:", mode.routeHighlightSourceId);
+    return;
+  }
+
+  clearAllHighlights();
+
+  source.setData({
+    type: "FeatureCollection",
+    features: matches
+  });
+
+  fitToFeatures(matches);
+}
+
+function buildPopupContent(feature) {
+  const properties = feature.properties || {};
+  const stopName =
+    properties.name ||
+    properties.local_ref ||
+    properties.ref ||
+    "Haltestelle";
+
+  const routeType = String(properties.route_type || "").trim().toLowerCase();
+  const mode = MODES[routeType];
+  const routes = normalizeRoutesFromStopProperties(properties);
+
+  const wrapper = document.createElement("div");
+
+  const title = document.createElement("div");
+  title.className = "popup-stop-name";
+  title.textContent = stopName;
+  wrapper.appendChild(title);
+
+  const subtitle = document.createElement("div");
+  subtitle.className = "popup-subtitle";
+  subtitle.textContent = `${mode ? mode.label : routeType}-Linien`;
+  wrapper.appendChild(subtitle);
+
+  if (!routes.length) {
+    const empty = document.createElement("div");
+    empty.textContent = "Keine Linieninformationen vorhanden.";
+    wrapper.appendChild(empty);
+    return wrapper;
+  }
+
+  const list = document.createElement("ul");
+  list.className = "route-list";
+
+  for (const route of routes) {
+    if (route.variants && route.variants.length) {
+      for (const variant of route.variants) {
+        const li = document.createElement("li");
+        const btn = document.createElement("button");
+
+        btn.type = "button";
+        btn.className = "route-link";
+
+        const label = route.ref
+          ? `${route.ref}: ${variant.from || "?"} → ${variant.to || "?"}`
+          : `${variant.from || "?"} → ${variant.to || "?"}`;
+
+        btn.textContent = label;
+        btn.setAttribute("data-route-type", routeType);
+        btn.setAttribute("data-relation-id", variant.relation_id || "");
+
+        li.appendChild(btn);
+        list.appendChild(li);
+      }
+    } else {
+      const li = document.createElement("li");
+      const btn = document.createElement("button");
+
+      btn.type = "button";
+      btn.className = "route-link";
+      btn.textContent = route.ref || route.name || "(ohne Bezeichnung)";
+      btn.setAttribute("data-route-type", routeType);
+      btn.setAttribute("data-route-ref", route.ref || "");
+
+      li.appendChild(btn);
+      list.appendChild(li);
+    }
+  }
+
+  wrapper.appendChild(list);
+
+  wrapper.addEventListener("click", (event) => {
+    const relationBtn = event.target.closest("[data-route-type][data-relation-id]");
+    if (relationBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const clickedRouteType = relationBtn.getAttribute("data-route-type");
+      const relationId = relationBtn.getAttribute("data-relation-id");
+
+      showRouteHighlightByRelation(clickedRouteType, relationId);
+      return;
+    }
+
+    const refBtn = event.target.closest("[data-route-type][data-route-ref]");
+    if (refBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const clickedRouteType = refBtn.getAttribute("data-route-type");
+      const clickedRouteRef = refBtn.getAttribute("data-route-ref");
+
+      showRouteHighlightByRef(clickedRouteType, clickedRouteRef);
+    }
+  });
+
+  return wrapper;
+}
+
+function openStopPopup(feature, lngLat) {
+  closeActivePopup();
+
+  activePopup = new maplibregl.Popup({
+    closeButton: true,
+    closeOnClick: false
+  })
+    .setLngLat(lngLat)
+    .setDOMContent(buildPopupContent(feature))
+    .addTo(map);
+}
+
+async function loadJson(url) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Fehler beim Laden von ${url}: HTTP ${response.status}`);
+  }
+  return await response.json();
+}
+
+function addModeLayers(modeKey, stopsGeojson, routesGeojson) {
+  const mode = MODES[modeKey];
+  routeDataByMode[modeKey] = routesGeojson;
+
+  map.addSource(mode.stopSourceId, {
+    type: "geojson",
+    data: stopsGeojson
+  });
+
+  map.addSource(mode.routeHighlightSourceId, {
+    type: "geojson",
+    data: {
+      type: "FeatureCollection",
+      features: []
+    }
+  });
+
+  map.addLayer({
+    id: mode.routeHighlightLayerId,
+    type: "line",
+    source: mode.routeHighlightSourceId,
+    layout: {
+      "line-cap": "round",
+      "line-join": "round"
+    },
+    paint: {
+      "line-color": mode.color,
+      "line-width": [
+        "interpolate", ["linear"], ["zoom"],
+        10, 3,
+        14, 5,
+        18, 8
+      ],
+      "line-opacity": 0.95
+    }
+  });
+
+  map.addLayer({
+    id: mode.stopLayerId,
+    type: "circle",
+    source: mode.stopSourceId,
+    paint: {
+      "circle-radius": [
+        "interpolate", ["linear"], ["zoom"],
+        10, 3,
+        14, 5,
+        18, 7
+      ],
+      "circle-color": mode.color,
+      "circle-stroke-width": 1.2,
+      "circle-stroke-color": "#ffffff"
+    }
+  });
+
+  map.on("click", mode.stopLayerId, (e) => {
+    if (!e.features || !e.features.length) return;
+    openStopPopup(e.features[0], e.lngLat);
+  });
+
+  map.on("mouseenter", mode.stopLayerId, () => {
+    map.getCanvas().style.cursor = "pointer";
+  });
+
+  map.on("mouseleave", mode.stopLayerId, () => {
+    map.getCanvas().style.cursor = "";
+  });
+}
+
+function addPtRoutingLayers() {
+  map.addSource("pt-route-line-source", {
+    type: "geojson",
+    data: { type: "FeatureCollection", features: [] }
+  });
+
+  map.addSource("pt-route-points-source", {
+    type: "geojson",
+    data: { type: "FeatureCollection", features: [] }
+  });
+
+  map.addLayer({
+    id: "pt-route-line-layer",
+    type: "line",
+    source: "pt-route-line-source",
+    layout: {
+      "line-cap": "round",
+      "line-join": "round"
+    },
+    paint: {
+      "line-color": [
+        "case",
+        ["==", ["get", "leg_type"], "ride"],
+        [
+          "match",
+          ["get", "route_type"],
+          "bus", "#e30000",
+          "tram", "#0066dd",
+          "subway", "#009966",
+          "train", "#7a3db8",
+          "#444444"
+        ],
+        "#555555"
+      ],
+      "line-width": [
+        "case",
+        ["==", ["get", "leg_type"], "ride"], 6,
+        4
+      ],
+      "line-dasharray": [
+        "case",
+        ["in", ["get", "leg_type"], ["literal", ["access", "egress", "transfer"]]],
+        ["literal", [2, 2]],
+        ["literal", [1, 0]]
+      ],
+      "line-opacity": 0.92
+    }
+  });
+
+  map.addLayer({
+    id: "pt-route-points-layer",
+    type: "circle",
+    source: "pt-route-points-source",
+    paint: {
+      "circle-radius": 5,
+      "circle-color": "#111111",
+      "circle-stroke-color": "#ffffff",
+      "circle-stroke-width": 1.5
+    }
+  });
+}
+
+function clearPtRoute() {
+  currentPtRouteResponse = null;
+
+  const lineSource = map.getSource("pt-route-line-source");
+  if (lineSource) {
+    lineSource.setData({ type: "FeatureCollection", features: [] });
+  }
+
+  const pointSource = map.getSource("pt-route-points-source");
+  if (pointSource) {
+    pointSource.setData({ type: "FeatureCollection", features: [] });
+  }
+
+  updateRoutePanel(null);
+}
+
+function resetRoutingSelection() {
+  startPoint = null;
+  endPoint = null;
+
+  if (startMarker) {
+    startMarker.remove();
+    startMarker = null;
+  }
+
+  if (endMarker) {
+    endMarker.remove();
+    endMarker = null;
+  }
+
+  clearPtRoute();
+}
+
+function formatDistance(m) {
+  if (m == null || Number.isNaN(Number(m))) return "–";
+  const value = Number(m);
+  if (value < 1000) return `${Math.round(value)} m`;
+  return `${(value / 1000).toFixed(1)} km`;
+}
+
+function buildLegLabel(edge) {
+  const type = edge?.type;
+
+  if (type === "access") {
+    return `Zu Fuß zur Station ${edge.to_stop_name || ""}`.trim();
+  }
+
+  if (type === "egress") {
+    return `Zu Fuß von ${edge.from_stop_name || "der Station"} zum Ziel`;
+  }
+
+  if (type === "transfer") {
+    return `Umstieg / Fußweg: ${edge.from_stop_name || "?"} → ${edge.to_stop_name || "?"}`;
+  }
+
+  if (type === "ride") {
+    const rt = edge.route_type === "subway" ? "U-Bahn" :
+               edge.route_type === "tram" ? "Tram" :
+               edge.route_type === "train" ? "Zug" :
+               edge.route_type === "bus" ? "Bus" :
+               edge.route_type || "Linie";
+
+    const ref = edge.ref ? ` ${edge.ref}` : "";
+    return `${rt}${ref}: ${edge.from_stop_name || "?"} → ${edge.to_stop_name || "?"}`;
+  }
+
+  return `${type || "Unbekannt"}: ${edge.from_stop_name || "?"} → ${edge.to_stop_name || "?"}`;
+}
+
+function updateRoutePanel(data) {
+  const container = document.getElementById("route-panel-content");
+
+  if (!data || !Array.isArray(data.edges) || !data.edges.length) {
+    container.innerHTML = `<div class="route-panel-empty">Noch keine Route gewählt.</div>`;
+    return;
+  }
+
+  const summary = data.summary || {};
+
+  const stepsHtml = data.edges.map(edge => {
+    const label = buildLegLabel(edge);
+    const routeMeta = edge.route_name
+      ? `<div class="route-step-sub">${edge.route_name}</div>`
+      : "";
+    const distMeta = `<div class="route-step-meta">${formatDistance(edge.distance_m)}</div>`;
+
+    return `<li><div>${label}</div>${routeMeta}${distMeta}</li>`;
+  }).join("");
+
+  container.innerHTML = `
+    <div class="route-summary">
+      Fahrt: ${formatDistance(summary.ride_m)}<br>
+      Umstieg: ${formatDistance(summary.transfer_m)}<br>
+      Zuweg: ${formatDistance(summary.access_m)}<br>
+      Abweg: ${formatDistance(summary.egress_m)}
+    </div>
+    <ol class="route-steps">${stepsHtml}</ol>
+  `;
+}
+
+async function loadPtRoute1(startLngLat, endLngLat) {
+  const url = `${PT_ROUTER_URL}?start=${startLngLat.lng},${startLngLat.lat}&end=${endLngLat.lng},${endLngLat.lat}`;
+
+  try {
+    const response = await fetch(url);
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error("PT routing error:", data);
+      updateRoutePanel(null);
+      alert(data?.error || "Öffi-Route konnte nicht berechnet werden.");
+      return;
+    }
+
+    currentPtRouteResponse = data;
+
+    const lineSource = map.getSource("pt-route-line-source");
+    if (lineSource) {
+      lineSource.setData(
+        data.route_line || { type: "FeatureCollection", features: [] }
+      );
+    }
+
+    const pointSource = map.getSource("pt-route-points-source");
+    if (pointSource) {
+      pointSource.setData(
+        data.route_points || { type: "FeatureCollection", features: [] }
+      );
+    }
+
+    updateRoutePanel(data);
+
+    const features = [
+      ...((data.route_line && data.route_line.features) || []),
+      ...((data.route_points && data.route_points.features) || [])
+    ];
+    fitToFeatures(features);
+  } catch (error) {
+    console.error("Fehler beim Laden der Öffi-Route:", error);
+    updateRoutePanel(null);
+    alert("Öffi-Route konnte nicht geladen werden.");
+  }
+}
+
+async function loadPtRoute(startLngLat, endLngLat) {
+  const url = `${PT_ROUTER_URL}?start=${startLngLat.lng},${startLngLat.lat}&end=${endLngLat.lng},${endLngLat.lat}`;
+
+  try {
+    const response = await fetch(url);
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error("PT routing error:", data);
+      updateRoutePanel(null);
+      alert(data?.error || "Öffi-Route konnte nicht berechnet werden.");
+      return;
+    }
+
+    currentPtRouteResponse = data;
+
+    const lineSource = map.getSource("pt-route-line-source");
+    if (lineSource) {
+      lineSource.setData(
+        data.route_line || { type: "FeatureCollection", features: [] }
+      );
+    }
+
+    const pointSource = map.getSource("pt-route-points-source");
+    if (pointSource) {
+      pointSource.setData(
+        data.route_points || { type: "FeatureCollection", features: [] }
+      );
+    }
+
+    updateRoutePanel(data);
+
+    const features = [
+      ...((data.route_line && data.route_line.features) || []),
+      ...((data.route_points && data.route_points.features) || [])
+    ];
+
+    try {
+      fitToFeatures(features);
+    } catch (fitError) {
+      console.error("fitToFeatures failed:", fitError);
+    }
+
+  } catch (error) {
+    console.error("Fehler beim Laden der Öffi-Route:", error);
+    updateRoutePanel(null);
+    alert("Öffi-Route konnte nicht geladen werden.");
+  }
+}
+
+function handleMapRoutingClick(lngLat) {
+  if (!startPoint) {
+    startPoint = lngLat;
+    startMarker = new maplibregl.Marker({ color: "green" })
+      .setLngLat(startPoint)
+      .setPopup(new maplibregl.Popup({ offset: 25 }).setText("Start"))
+      .addTo(map);
+    return;
+  }
+
+  if (!endPoint) {
+    endPoint = lngLat;
+    endMarker = new maplibregl.Marker({ color: "red" })
+      .setLngLat(endPoint)
+      .setPopup(new maplibregl.Popup({ offset: 25 }).setText("Ziel"))
+      .addTo(map);
+
+    loadPtRoute(startPoint, endPoint);
+    return;
+  }
+
+  resetRoutingSelection();
+
+  startPoint = lngLat;
+  startMarker = new maplibregl.Marker({ color: "green" })
+    .setLngLat(startPoint)
+    .setPopup(new maplibregl.Popup({ offset: 25 }).setText("Start"))
+    .addTo(map);
+}
+
+document.getElementById("clear-route-btn").addEventListener("click", () => {
+  resetRoutingSelection();
+});
+
+map.on("load", async () => {
+  try {
+    
+	
+	for (const [modeKey, mode] of Object.entries(MODES)) {
+      const [stopsGeojson, routesGeojson] = await Promise.all([
+        loadJson(mode.stopsUrl),
+        loadJson(mode.routesUrl)
+      ]);
+
+      addModeLayers(modeKey, stopsGeojson, routesGeojson);
+    }
+	
+	
+    addPtRoutingLayers();
+
+    map.on("click", (e) => {
+      const stopLayerIds = Object.values(MODES).map(mode => mode.stopLayerId);
+      const highlightLayerIds = Object.values(MODES).map(mode => mode.routeHighlightLayerId);
+
+      const hits = map.queryRenderedFeatures(e.point, {
+        layers: [...stopLayerIds, ...highlightLayerIds]
+      });
+
+      if (!hits.length) {
+        closeActivePopup();
+        clearAllHighlights();
+        handleMapRoutingClick(e.lngLat);
+      }
+    });
+
+    console.log("Öffi-Daten geladen.");
+  } catch (error) {
+    console.error(error);
+  }
+});
+</script>
+
+</body>
+</html>
