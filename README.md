@@ -47,3 +47,14 @@ python merge_graphs.py merged-stop-graph.json bus-stop-graph.json tram-stop-grap
 python build-route.py merged-stop-graph.json 16.3725,48.2089 16.3400,48.1850 route-result.json
 python test-route.py
 </pre>
+
+# Extract stations geojson (optional)
+<pre>
+ogr2ogr -f GeoJSON bus-stops.geojson wien.osm.pbf points -where "highway = 'bus_stop' OR (other_tags LIKE '%\"bus\"=>\"yes\"%' AND (other_tags LIKE '%\"public_transport\"=>\"platform\"%' OR other_tags LIKE '%\"public_transport\"=>\"stop_position\"%'))"
+
+ogr2ogr -f GeoJSON tram-stops.geojson wien.osm.pbf points -where "(other_tags LIKE '%\"tram\"=>\"yes\"%' AND (other_tags LIKE '%\"public_transport\"=>\"platform\"%' OR other_tags LIKE '%\"public_transport\"=>\"stop_position\"%'))"
+
+ogr2ogr -f GeoJSON subway-stops.geojson wien.osm.pbf points -where "(other_tags LIKE '%\"subway\"=>\"yes\"%' AND (other_tags LIKE '%\"public_transport\"=>\"platform\"%' OR other_tags LIKE '%\"public_transport\"=>\"stop_position\"%'))"
+
+ogr2ogr -f GeoJSON train-stops.geojson wien.osm.pbf points -where "(other_tags LIKE '%\"train\"=>\"yes\"%' AND (other_tags LIKE '%\"public_transport\"=>\"platform\"%' OR other_tags LIKE '%\"public_transport\"=>\"stop_position\"%'))"
+</pre>
